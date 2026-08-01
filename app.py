@@ -159,7 +159,7 @@ HTML_TEMPLATE = r"""
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Gateway of SaaS Tally Order Portal</title>
+    <title>New Mehta Sales Corporation Order Portal</title>
     <style>
         body { font-family: 'Segoe UI', Tahoma, sans-serif; background: #0f172a; color: #f8fafc; margin: 0; padding: 10px; }
         .header { background: #1e3a8a; padding: 12px 20px; border-radius: 6px; display: flex; justify-content: space-between; align-items: center; }
@@ -188,7 +188,7 @@ HTML_TEMPLATE = r"""
 </head>
 <body>
     <div class="header">
-        <h2>🌐 Gateway of SaaS Tally Order Portal</h2>
+        <h2>🌐 New Mehta Sales Corporation Order Portal</h2>
         <span>System Status: <b>Auto-Sync Stock Connected</b></span>
     </div>
 
