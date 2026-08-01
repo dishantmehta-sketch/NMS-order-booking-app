@@ -13,6 +13,60 @@ app.config['SECRET_KEY'] = secrets.token_hex(32)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_FILE = os.path.join(BASE_DIR, "saas_enterprise.db")
+LOCAL_XML_FILE = os.path.join(BASE_DIR, "Master.xml")
+
+def sanitize_xml(xml_content):
+    if isinstance(xml_content, bytes):
+        xml_content = xml_content.decode('utf-8', errors='ignore')
+    xml_content = re.sub(r'&#[0-9]+;', '', xml_content)
+    xml_content = re.sub(r'&#x[0-9a-fA-F]+;', '', xml_content)
+    xml_content = re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F]', '', xml_content)
+    return xml_content
+
+def parse_and_seed_xml_content(raw_xml, company_code='10000'):
+    try:
+        cleaned_xml = sanitize_xml(raw_xml)
+        root = ET.fromstring(cleaned_xml)
+
+        p_count = 0
+        i_count = 0
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+
+        for ledger in root.findall('.//LEDGER'):
+            name = ledger.get('NAME') or ledger.findtext('NAME', '')
+            if name:
+                gstin = ledger.findtext('PARTYGSTIN', '')
+                gst_type = 'Registered / Regular' if gstin else 'Unregistered / URD'
+                mobile = ledger.findtext('LEDGERPHONE', '') or ledger.findtext('MOBILE', '') or '9898989898'
+                address = ledger.findtext('ADDRESS', 'Market Area')
+                try:
+                    cursor.execute('''
+                        INSERT OR REPLACE INTO tally_parties (company_code, party_name, gst_status, gstin, mobile, address, state, city_beat, is_deleted)
+                        VALUES (?, ?, ?, ?, ?, ?, 'Madhya Pradesh', 'Ratlam', 0)
+                    ''', (company_code, name, gst_type, gstin, mobile, address))
+                    p_count += 1
+                except:
+                    pass
+
+        for item in root.findall('.//STOCKITEM'):
+            iname = item.get('NAME') or item.findtext('NAME', '')
+            if iname:
+                uom = item.findtext('BASEUNITS', 'Pcs')
+                try:
+                    cursor.execute('''
+                        INSERT OR REPLACE INTO tally_items (company_code, item_name, stock_group, uom, default_rate)
+                        VALUES (?, ?, 'General', ?, 0.0)
+                    ''', (company_code, iname, uom))
+                    i_count += 1
+                except:
+                    pass
+
+        conn.commit()
+        conn.close()
+        print(f"🎉 XML Auto-Seeded: {p_count} Parties, {i_count} Items.")
+    except Exception as e:
+        print(f"Auto XML Seed Error: {e}")
 
 def init_db():
     conn = sqlite3.connect(DB_FILE)
@@ -43,7 +97,6 @@ def init_db():
         )
     ''')
 
-    # Persistent Tally Master Parties
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS tally_parties (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -61,16 +114,6 @@ def init_db():
         )
     ''')
 
-    try:
-        cursor.execute("ALTER TABLE tally_parties ADD COLUMN is_deleted INTEGER DEFAULT 0")
-    except:
-        pass
-    try:
-        cursor.execute("ALTER TABLE tally_parties ADD COLUMN deleted_at TIMESTAMP")
-    except:
-        pass
-
-    # Persistent Stock List Master Table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS tally_items (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -82,7 +125,6 @@ def init_db():
         )
     ''')
 
-    # Multi-Item Orders Table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS orders (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -99,35 +141,23 @@ def init_db():
         )
     ''')
 
-    cursor.execute("INSERT OR IGNORE INTO companies (company_code, company_name) VALUES ('10000', 'New Mehta Sales Corp')")
+    cursor.execute("INSERT OR IGNORE INTO companies (company_code, company_name) VALUES ('10000', 'New Mehta Sales Corporation')")
     cursor.execute("INSERT OR IGNORE INTO users (company_code, user_id, password, full_name, email, mobile, role, status) VALUES ('10000', 'admin', 'admin123', 'Company Admin Owner', 'admin@mehta.com', '9898989898', 'ADMIN', 'Active')")
     cursor.execute("INSERT OR IGNORE INTO users (company_code, user_id, password, full_name, email, mobile, role, assigned_state, assigned_city, status) VALUES ('10000', 'NMS1', 'pass123', 'Dinesh', 'dinesh@mehta.com', '9797979797', 'SALESMAN', 'Madhya Pradesh', 'Ratlam', 'Active')")
-
-    # Sample Seed Parties
-    cursor.execute("INSERT OR IGNORE INTO tally_parties (company_code, party_name, gst_status, gstin, mobile, address, state, city_beat, is_deleted) VALUES ('10000', 'Ramesh Kirana Store', 'Unregistered / URD', '', '9826011111', 'Station Road', 'Madhya Pradesh', 'Ratlam', 0)")
-    cursor.execute("INSERT OR IGNORE INTO tally_parties (company_code, party_name, gst_status, gstin, mobile, address, state, city_beat, is_deleted) VALUES ('10000', 'Mehta Provision Mart', 'Registered / Regular', '23AAAAA0000A1Z5', '9826022222', 'Chandni Chowk', 'Madhya Pradesh', 'Ratlam', 0)")
-
-    # Sample Seed Stock Items (Auto-Catches Persistent Master Data)
-    cursor.execute("INSERT OR IGNORE INTO tally_items (company_code, item_name, stock_group, uom, default_rate) VALUES ('10000', 'Tea Premium 500g', 'Groceries', 'Pcs', 240.0)")
-    cursor.execute("INSERT OR IGNORE INTO tally_items (company_code, item_name, stock_group, uom, default_rate) VALUES ('10000', 'Sugar Super 1kg', 'Groceries', 'Kg', 48.0)")
-    cursor.execute("INSERT OR IGNORE INTO tally_items (company_code, item_name, stock_group, uom, default_rate) VALUES ('10000', 'Refined Oil 1L Pouch', 'Oil', 'Pouch', 135.0)")
 
     conn.commit()
     conn.close()
 
-def cleanup_expired_trash():
-    try:
-        conn = sqlite3.connect(DB_FILE)
-        cursor = conn.cursor()
-        thirty_days_ago = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
-        cursor.execute('DELETE FROM tally_parties WHERE is_deleted = 1 AND deleted_at < ?', (thirty_days_ago,))
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        print(f"Trash Cleanup Error: {e}")
+    # JUGAD: Auto Parse Master.xml if available in repository!
+    if os.path.exists(LOCAL_XML_FILE):
+        try:
+            with open(LOCAL_XML_FILE, 'rb') as f:
+                raw_bytes = f.read()
+                parse_and_seed_xml_content(raw_bytes, '10000')
+        except Exception as e:
+            print(f"Error reading local Master.xml: {e}")
 
 init_db()
-cleanup_expired_trash()
 
 def token_required(f):
     @wraps(f)
@@ -144,14 +174,6 @@ def token_required(f):
             return jsonify({'status': 'error', 'message': 'Invalid Token or Session Expired.'}), 401
         return f(current_user, current_role, company_code, *args, **kwargs)
     return decorated
-
-def sanitize_xml(xml_content):
-    if isinstance(xml_content, bytes):
-        xml_content = xml_content.decode('utf-8', errors='ignore')
-    xml_content = re.sub(r'&#[0-9]+;', '', xml_content)
-    xml_content = re.sub(r'&#x[0-9a-fA-F]+;', '', xml_content)
-    xml_content = re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F]', '', xml_content)
-    return xml_content
 
 HTML_TEMPLATE = r"""
 <!DOCTYPE html>
@@ -218,10 +240,10 @@ HTML_TEMPLATE = r"""
 
         <!-- PC / ADMIN REAL XML IMPORT PANEL -->
         <div id="tallyImportPanel" class="tally-box" style="display:none; margin-top:15px;">
-            <h4 style="margin-top:0; color:#166534;">💻 Admin PC Control: Import Tally XML Master File</h4>
+            <h4 style="margin-top:0; color:#166534;">💻 Admin PC Control: Manual Re-Import Tally XML File</h4>
             <div style="display:flex; gap:10px; align-items:center;">
                 <input type="file" id="tallyXmlFile" accept=".xml">
-                <button class="btn btn-add" style="width:220px;" onclick="uploadTallyXml()">📥 Parse & Auto-Save XML</button>
+                <button class="btn btn-add" style="width:220px;" onclick="uploadTallyXml()">📥 Parse & Update XML</button>
             </div>
         </div>
 
@@ -463,7 +485,6 @@ HTML_TEMPLATE = r"""
                 document.getElementById('tallyImportPanel').style.display = 'block';
             }
 
-            // AUTO-FETCH PERSISTENT DATA FROM DATABASE
             fetchPartyMastersList();
             fetchItemMastersList();
             fetchOrders();
@@ -487,7 +508,6 @@ HTML_TEMPLATE = r"""
             .then(res => res.json())
             .then(items => {
                 masterItemsList = items;
-                // Auto-Initialize First Item Row with Persistent Stock
                 document.getElementById('orderItemsContainer').innerHTML = '';
                 orderItemRowIndex = 0;
                 addOrderItemRow();
@@ -1020,46 +1040,8 @@ def import_tally_xml(current_user, current_role, company_code):
     file = request.files['file']
     try:
         raw_bytes = file.read()
-        cleaned_xml = sanitize_xml(raw_bytes)
-        root = ET.fromstring(cleaned_xml)
-
-        p_count = 0
-        i_count = 0
-        conn = sqlite3.connect(DB_FILE)
-        cursor = conn.cursor()
-
-        for ledger in root.findall('.//LEDGER'):
-            name = ledger.get('NAME') or ledger.findtext('NAME', '')
-            if name:
-                gstin = ledger.findtext('PARTYGSTIN', '')
-                gst_type = 'Registered / Regular' if gstin else 'Unregistered / URD'
-                mobile = ledger.findtext('LEDGERPHONE', '') or ledger.findtext('MOBILE', '') or '9898989898'
-                address = ledger.findtext('ADDRESS', 'Market Area')
-                try:
-                    cursor.execute('''
-                        INSERT OR REPLACE INTO tally_parties (company_code, party_name, gst_status, gstin, mobile, address, state, city_beat, is_deleted)
-                        VALUES (?, ?, ?, ?, ?, ?, 'Madhya Pradesh', 'Ratlam', 0)
-                    ''', (company_code, name, gst_type, gstin, mobile, address))
-                    p_count += 1
-                except:
-                    pass
-
-        for item in root.findall('.//STOCKITEM'):
-            iname = item.get('NAME') or item.findtext('NAME', '')
-            if iname:
-                uom = item.findtext('BASEUNITS', 'Pcs')
-                try:
-                    cursor.execute('''
-                        INSERT OR REPLACE INTO tally_items (company_code, item_name, stock_group, uom, default_rate)
-                        VALUES (?, ?, 'General', ?, 0.0)
-                    ''', (company_code, iname, uom))
-                    i_count += 1
-                except:
-                    pass
-
-        conn.commit()
-        conn.close()
-        return jsonify({"status": "success", "message": f"🎉 Tally XML Parsed & Auto-Saved! {p_count} Parties & {i_count} Stock Items Added to Persistent Database."})
+        parse_and_seed_xml_content(raw_bytes, company_code)
+        return jsonify({"status": "success", "message": "🎉 Tally XML Parsed & Auto-Saved to Database!"})
     except Exception as e:
         return jsonify({"status": "error", "message": f"XML Parsing Error: {str(e)}"}), 500
 
