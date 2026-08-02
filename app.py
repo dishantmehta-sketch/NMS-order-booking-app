@@ -36,15 +36,31 @@ def parse_and_seed_xml_content(raw_xml, company_code='10000'):
         for ledger in root.findall('.//LEDGER'):
             name = ledger.get('NAME') or ledger.findtext('NAME', '')
             if name:
-                gstin = ledger.findtext('PARTYGSTIN', '')
+                gstin = ledger.findtext('PARTYGSTIN', '') or ledger.findtext('GSTIN', '') or ''
                 gst_type = 'Registered / Regular' if gstin else 'Unregistered / URD'
-                mobile = ledger.findtext('LEDGERPHONE', '') or ledger.findtext('MOBILE', '') or '9898989898'
-                address = ledger.findtext('ADDRESS', 'Market Area')
+                
+                # Strict extraction: If missing in XML, leave completely BLANK (no dummy numbers)
+                mobile = ledger.findtext('LEDGERPHONE', '') or ledger.findtext('MOBILE', '') or ledger.findtext('PHONE', '') or ''
+                
+                # Dynamic multiline ADDRESS extraction: If missing, leave BLANK
+                addr_lines = []
+                address_node = ledger.find('ADDRESS.LIST')
+                if address_node is not None:
+                    for line in address_node.findall('ADDRESS'):
+                        if line.text and line.text.strip():
+                            addr_lines.append(line.text.strip())
+                if not addr_lines:
+                    for addr_elem in ledger.findall('ADDRESS'):
+                        if addr_elem.text and addr_elem.text.strip():
+                            addr_lines.append(addr_elem.text.strip())
+                
+                full_address = ", ".join(addr_lines) if addr_lines else ''
+
                 try:
                     cursor.execute('''
                         INSERT OR REPLACE INTO tally_parties (company_code, party_name, gst_status, gstin, mobile, address, state, city_beat, is_deleted)
                         VALUES (?, ?, ?, ?, ?, ?, 'Madhya Pradesh', 'Ratlam', 0)
-                    ''', (company_code, name, gst_type, gstin, mobile, address))
+                    ''', (company_code, name, gst_type, gstin, mobile, full_address))
                     p_count += 1
                 except:
                     pass
@@ -98,7 +114,6 @@ def init_db():
         )
     ''')
 
-    # Migration check for existing DB without current_token column
     try:
         cursor.execute("ALTER TABLE users ADD COLUMN current_token TEXT DEFAULT ''")
     except:
@@ -136,7 +151,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS orders (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             company_code TEXT,
-            order_no TEXT,
+            order_no TEXT UNIQUE,
             order_date TEXT,
             salesman_id TEXT,
             party_name TEXT,
@@ -149,8 +164,8 @@ def init_db():
     ''')
 
     cursor.execute("INSERT OR IGNORE INTO companies (company_code, company_name) VALUES ('10000', 'New Mehta Sales Corporation')")
-    cursor.execute("INSERT OR IGNORE INTO users (company_code, user_id, password, full_name, email, mobile, role, status) VALUES ('10000', 'admin', 'admin123', 'Company Admin Owner', 'admin@mehta.com', '9898989898', 'ADMIN', 'Active')")
-    cursor.execute("INSERT OR IGNORE INTO users (company_code, user_id, password, full_name, email, mobile, role, assigned_state, assigned_city, status) VALUES ('10000', 'NMS1', 'pass123', 'Dinesh', 'dinesh@mehta.com', '9797979797', 'SALESMAN', 'Madhya Pradesh', 'Ratlam', 'Active')")
+    cursor.execute("INSERT OR IGNORE INTO users (company_code, user_id, password, full_name, email, mobile, role, status) VALUES ('10000', 'admin', 'admin123', 'Company Admin Owner', 'admin@mehta.com', '', 'ADMIN', 'Active')")
+    cursor.execute("INSERT OR IGNORE INTO users (company_code, user_id, password, full_name, email, mobile, role, assigned_state, assigned_city, status) VALUES ('10000', 'NMS1', 'pass123', 'Dinesh', 'dinesh@mehta.com', '', 'SALESMAN', 'Madhya Pradesh', 'Ratlam', 'Active')")
 
     conn.commit()
     conn.close()
@@ -177,7 +192,6 @@ def token_required(f):
             current_role = data['role']
             company_code = data['company_code']
 
-            # Single Session Check: Verify if token matches current active token in DB
             conn = sqlite3.connect(DB_FILE)
             cursor = conn.cursor()
             cursor.execute("SELECT current_token FROM users WHERE LOWER(user_id) = LOWER(?)", (current_user,))
@@ -185,7 +199,7 @@ def token_required(f):
             conn.close()
 
             if not row or row[0] != token:
-                return jsonify({'status': 'session_expired', 'message': 'Logged in from another device! Please login again.'}), 401
+                return jsonify({'status': 'session_expired', 'message': 'Logged in from another device!'}), 401
 
         except:
             return jsonify({'status': 'error', 'message': 'Invalid Token or Session Expired.'}), 401
@@ -203,34 +217,29 @@ HTML_TEMPLATE = r"""
         * { box-sizing: border-box; font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
         body { background: #0f172a; color: #0f172a; margin: 0; padding: 10px 5px; font-size: 16px; }
         
-        /* Mobile Portrait View Wrapper */
         .app-container { max-width: 480px; margin: 0 auto; background: #f8fafc; border-radius: 12px; min-height: 95vh; padding: 12px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); }
         
-        /* Centered Header Bar Styling */
         .header { background: linear-gradient(135deg, #1e3a8a, #0f172a); color: white; padding: 18px 10px; border-radius: 10px; text-align: center; margin-bottom: 15px; }
         .header h1 { margin: 0; font-size: 24px; font-weight: 800; letter-spacing: 0.5px; line-height: 1.2; text-transform: uppercase; }
         .header h3 { margin: 6px 0 0 0; font-size: 16px; font-weight: 500; color: #93c5fd; text-transform: uppercase; letter-spacing: 1px; }
         
         .card { background: #ffffff; padding: 16px; border-radius: 10px; margin-top: 12px; border: 1px solid #e2e8f0; box-shadow: 0 2px 6px rgba(0,0,0,0.05); }
         
-        /* Increased Font Controls */
         label { font-size: 15px; font-weight: 600; color: #334155; margin-bottom: 4px; display: block; }
         select, input { width: 100%; padding: 12px 14px; border: 1.5px solid #cbd5e1; border-radius: 8px; font-size: 16px; color: #0f172a; background: #fff; outline: none; transition: 0.2s; }
         select:focus, input:focus { border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.2); }
         
-        /* Buttons */
         .btn { background-color: #1e3a8a; color: white; padding: 14px; border: none; border-radius: 8px; cursor: pointer; font-weight: 700; font-size: 16px; width: 100%; text-align: center; }
         .btn-add { background-color: #16a34a; }
-        .btn-edit { background-color: #0284c7; padding: 8px 12px; font-size: 14px; width: auto; }
-        .btn-warn { background-color: #d97706; padding: 8px 12px; font-size: 14px; width: auto; }
-        .btn-danger { background-color: #dc2626; padding: 8px 12px; font-size: 14px; width: auto; }
+        .btn-edit { background-color: #0284c7; padding: 6px 10px; font-size: 13px; width: auto; }
+        .btn-warn { background-color: #d97706; padding: 6px 10px; font-size: 13px; width: auto; }
+        .btn-danger { background-color: #dc2626; padding: 6px 10px; font-size: 13px; width: auto; }
         .btn-link { background: none; border: none; color: #0284c7; cursor: pointer; text-decoration: underline; font-size: 15px; padding: 0; margin-top: 10px; }
         
-        /* Tables & Lists */
         .table-responsive { overflow-x: auto; -webkit-overflow-scrolling: touch; margin-top: 10px; }
         table { width: 100%; border-collapse: collapse; font-size: 14px; }
-        th, td { border: 1px solid #cbd5e1; padding: 10px 8px; text-align: left; }
-        th { background-color: #1e3a8a; color: white; font-size: 14px; }
+        th, td { border: 1px solid #cbd5e1; padding: 8px 6px; text-align: left; }
+        th { background-color: #1e3a8a; color: white; font-size: 13px; }
         
         .badge { padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: bold; color: white; display: inline-block; }
         .badge-urd { background: #d97706; }
@@ -240,7 +249,6 @@ HTML_TEMPLATE = r"""
         .tally-box { background: #f0fdf4; border: 1px solid #16a34a; padding: 12px; border-radius: 8px; margin-bottom: 12px; }
         .menu-btn { background: #0284c7; color: white; border: none; padding: 12px; border-radius: 8px; font-weight: bold; cursor: pointer; font-size: 14px; flex: 1 1 45%; }
         
-        /* Modals for Mobile */
         .modal { display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.7); align-items:center; justify-content:center; z-index:999; padding:10px; }
         .modal-content { background:white; color:#0f172a; padding:18px; border-radius:12px; width:100%; max-width:450px; max-height:90vh; overflow-y:auto; box-shadow: 0 10px 30px rgba(0,0,0,0.3); }
         
@@ -252,7 +260,6 @@ HTML_TEMPLATE = r"""
 <body>
 
     <div class="app-container">
-        <!-- HEADER CENTERED & SCALED -->
         <div class="header">
             <h1>New Mehta Sales Corporation</h1>
             <h3>Order Portal</h3>
@@ -302,8 +309,9 @@ HTML_TEMPLATE = r"""
 
             <!-- FIELD SALES ORDER FORM -->
             <div class="order-form">
-                <h4 style="margin:0 0 12px 0; color:#1e3a8a; font-size:18px;">📦 Book Sales Order</h4>
-                
+                <h4 style="margin:0 0 12px 0; color:#1e3a8a; font-size:18px;" id="formTitle">📦 Book Sales Order</h4>
+                <input type="hidden" id="editOrderNo" value="">
+
                 <div style="margin-bottom:10px;">
                     <label>1. State:</label>
                     <select id="ordState">
@@ -324,10 +332,10 @@ HTML_TEMPLATE = r"""
                 </div>
 
                 <div style="margin-bottom:12px;">
-                    <label>3. Search & Select Party Name:</label>
+                    <label>3. Search & Select Party Name (Hindi/Eng):</label>
                     <div class="search-box-wrapper">
                         <span class="search-icon">🔍</span>
-                        <input type="text" id="partySearchInput" placeholder="Type party name to filter..." oninput="filterPartyListBySearch()">
+                        <input type="text" id="partySearchInput" placeholder="Type name (हिंदी / English)..." oninput="filterPartyListBySearch()">
                     </div>
                     <select id="ordParty" size="4" style="height: 110px;" onchange="updateSelectedPartyCard()">
                         <!-- Dynamic Options -->
@@ -347,13 +355,13 @@ HTML_TEMPLATE = r"""
                     <!-- Multi-Item Rows -->
                 </div>
 
-                <button class="btn btn-edit" style="margin-top:8px; width:100%; padding:10px;" onclick="addOrderItemRow()">➕ Add Another Stock Item Row</button>
+                <button class="btn btn-edit" style="margin-top:8px; width:100%; padding:10px;" onclick="addOrderItemRow()">➕ Add Stock Item Row</button>
 
                 <div style="margin-top:15px; text-align:right; font-size:19px; font-weight:bold; color:#166534; background:#dcfce7; padding:10px; border-radius:6px;">
                     Total Amount: ₹<span id="grandOrderTotal">0.00</span>
                 </div>
 
-                <button class="btn btn-add" style="margin-top:15px;" onclick="submitSalesOrder()">📝 Submit Complete Order</button>
+                <button class="btn btn-add" id="submitOrderBtn" style="margin-top:15px;" onclick="submitSalesOrder()">📝 Confirm & Submit Order</button>
             </div>
 
             <h4 style="margin-top:20px; font-size:18px;">📑 Recent Orders Audit</h4>
@@ -363,15 +371,34 @@ HTML_TEMPLATE = r"""
                         <tr>
                             <th>Order Details</th>
                             <th>Items & Total</th>
+                            <th>Action</th>
                         </tr>
                     </thead>
                     <tbody id="ordersAuditBody">
-                        <tr><td colspan="2">Loading...</td></tr>
+                        <tr><td colspan="3">Loading...</td></tr>
                     </tbody>
                 </table>
             </div>
         </div>
 
+    </div>
+
+    <!-- ORDER CONFIRMATION SUCCESS POP-UP MODAL -->
+    <div id="orderSuccessModal" class="modal">
+        <div class="modal-content" style="text-align:center;">
+            <div style="font-size:48px; margin-bottom:10px;">🎉</div>
+            <h3 style="margin:0; color:#166534; font-size:20px;">Order Confirmed!</h3>
+            <p style="font-size:14px; color:#64748b; margin-top:4px;">Order has been successfully registered.</p>
+            
+            <div style="background:#f1f5f9; padding:12px; border-radius:8px; text-align:left; font-size:14px; margin:15px 0; line-height:1.6;">
+                <b>Order No:</b> <span id="popOrdNo">--</span><br>
+                <b>Party Name:</b> <span id="popParty">--</span><br>
+                <b>Total Items:</b> <span id="popItemsCount">--</span><br>
+                <b>Grand Total:</b> <b style="color:#166534; font-size:16px;">₹<span id="popGrandTotal">0.00</span></b>
+            </div>
+
+            <button class="btn btn-add" onclick="closeModal('orderSuccessModal')">👍 Okay, Got It!</button>
+        </div>
     </div>
 
     <!-- FORGET PASSWORD MODAL -->
@@ -472,18 +499,15 @@ HTML_TEMPLATE = r"""
         </div>
     </div>
 
-    <!-- DATALIST FOR GLOBAL ITEM SEARCHING IN ORDER GRID -->
-    <datalist id="masterItemsDatalist">
-        <!-- Populated dynamically -->
-    </datalist>
+    <datalist id="masterItemsDatalist"></datalist>
 
     <script>
         var authToken = localStorage.getItem('jwt_token');
         var masterPartiesList = [];
         var masterItemsList = [];
+        var masterOrdersList = [];
         var orderItemRowIndex = 0;
 
-        // Auto Login Check on Load
         window.onload = function() {
             if(authToken) {
                 fetch('/api/verify-token', {
@@ -564,9 +588,9 @@ HTML_TEMPLATE = r"""
                 if(items) {
                     masterItemsList = items;
                     updateItemDatalist();
-                    document.getElementById('orderItemsContainer').innerHTML = '';
-                    orderItemRowIndex = 0;
-                    addOrderItemRow();
+                    if(document.getElementById('orderItemsContainer').children.length === 0) {
+                        addOrderItemRow();
+                    }
                 }
             });
         }
@@ -597,24 +621,24 @@ HTML_TEMPLATE = r"""
             updateSelectedPartyCard();
         }
 
-        function addOrderItemRow() {
+        function addOrderItemRow(itemVal = '', rateVal = '', qtyVal = '1') {
             orderItemRowIndex++;
             var container = document.getElementById('orderItemsContainer');
             var rowId = `itemRow_${orderItemRowIndex}`;
 
             var html = `<div id="${rowId}" style="background:#f1f5f9; padding:10px; border-radius:8px; border:1px solid #cbd5e1; margin-bottom:10px;">
                 <div style="margin-bottom:6px;">
-                    <label style="font-size:13px;">🔍 Search & Select Item:</label>
-                    <input type="text" class="row-item-input" list="masterItemsDatalist" placeholder="Type stock item name..." onchange="calcGrandTotal()" oninput="calcGrandTotal()">
+                    <label style="font-size:13px;">🔍 Select Item:</label>
+                    <input type="text" class="row-item-input" value="${itemVal}" list="masterItemsDatalist" placeholder="Type stock item name..." onchange="calcGrandTotal()" oninput="calcGrandTotal()">
                 </div>
                 <div style="display:flex; gap:8px; margin-bottom:6px;">
                     <div style="flex:1;">
                         <label style="font-size:13px;">Rate (₹):</label>
-                        <input type="number" class="row-item-rate" placeholder="Rate" step="any" oninput="calcGrandTotal()">
+                        <input type="number" class="row-item-rate" value="${rateVal}" placeholder="Rate" step="any" oninput="calcGrandTotal()">
                     </div>
                     <div style="flex:1;">
                         <label style="font-size:13px;">Qty:</label>
-                        <input type="number" class="row-item-qty" value="1" step="any" oninput="calcGrandTotal()">
+                        <input type="number" class="row-item-qty" value="${qtyVal}" step="any" oninput="calcGrandTotal()">
                     </div>
                 </div>
                 <div style="display:flex; justify-content:space-between; align-items:center;">
@@ -624,6 +648,7 @@ HTML_TEMPLATE = r"""
             </div>`;
 
             container.insertAdjacentHTML('beforeend', html);
+            calcGrandTotal();
         }
 
         function removeOrderItemRow(rowId) {
@@ -657,14 +682,15 @@ HTML_TEMPLATE = r"""
             if(party) {
                 document.getElementById('partyCardInfo').style.display = 'block';
                 document.getElementById('cardGst').innerText = party.gst_status + (party.gstin ? ' ('+party.gstin+')' : '');
-                document.getElementById('cardMobile').innerText = party.mobile || 'N/A';
-                document.getElementById('cardAddr').innerText = party.address || 'N/A';
+                document.getElementById('cardMobile').innerText = party.mobile ? party.mobile : '--';
+                document.getElementById('cardAddr').innerText = party.address ? party.address : '--';
             } else {
                 document.getElementById('partyCardInfo').style.display = 'none';
             }
         }
 
         function submitSalesOrder() {
+            var editNo = document.getElementById('editOrderNo').value;
             var state = document.getElementById('ordState').value;
             var city = document.getElementById('ordCity').value;
             var party = document.getElementById('ordParty').value;
@@ -686,11 +712,13 @@ HTML_TEMPLATE = r"""
                 }
             });
 
-            if(items.length === 0) return alert('Please add at least 1 valid Item with Rate & Qty!');
+            if(items.length === 0) return alert('Please add at least 1 valid Item!');
 
             var grandTotal = parseFloat(document.getElementById('grandOrderTotal').innerText || 0);
             var pObj = masterPartiesList.find(p => p.party_name === party);
             var gstStatus = pObj ? pObj.gst_status : 'URD';
+
+            var payload = { order_no: editNo, state: state, city: city, party_name: party, gst_status: gstStatus, items: items, grand_total: grandTotal };
 
             fetch('/api/create-order-multi', {
                 method: 'POST',
@@ -698,14 +726,79 @@ HTML_TEMPLATE = r"""
                     'Content-Type': 'application/json',
                     'x-access-token': authToken 
                 },
-                body: JSON.stringify({ state: state, city: city, party_name: party, gst_status: gstStatus, items: items, grand_total: grandTotal })
+                body: JSON.stringify(payload)
+            })
+            .then(res => handleApiResponse(res))
+            .then(data => {
+                if(data && data.status === 'success') {
+                    document.getElementById('popOrdNo').innerText = data.order_no;
+                    document.getElementById('popParty').innerText = party;
+                    document.getElementById('popItemsCount').innerText = items.length;
+                    document.getElementById('popGrandTotal').innerText = grandTotal.toFixed(2);
+                    
+                    document.getElementById('orderSuccessModal').style.display = 'flex';
+                    
+                    resetOrderForm();
+                    fetchOrders();
+                }
+            });
+        }
+
+        function resetOrderForm() {
+            document.getElementById('editOrderNo').value = '';
+            document.getElementById('formTitle').innerText = '📦 Book Sales Order';
+            document.getElementById('submitOrderBtn').innerText = '📝 Confirm & Submit Order';
+            document.getElementById('ordParty').value = '';
+            document.getElementById('orderItemsContainer').innerHTML = '';
+            addOrderItemRow();
+            updateSelectedPartyCard();
+        }
+
+        function editOrder(orderNo) {
+            var order = masterOrdersList.find(o => o.order_no === orderNo);
+            if(!order) return;
+
+            document.getElementById('editOrderNo').value = order.order_no;
+            document.getElementById('formTitle').innerText = `✏️ Edit Order: ${order.order_no}`;
+            document.getElementById('submitOrderBtn').innerText = '💾 Save Updated Order';
+
+            document.getElementById('ordState').value = order.assigned_state || 'Madhya Pradesh';
+            document.getElementById('ordCity').value = order.city_village || 'Ratlam';
+            filterOrderParties();
+            
+            document.getElementById('ordParty').value = order.party_name;
+            updateSelectedPartyCard();
+
+            var container = document.getElementById('orderItemsContainer');
+            container.innerHTML = '';
+
+            if(order.items && order.items.length > 0) {
+                order.items.forEach(i => {
+                    addOrderItemRow(i.item_name, i.rate, i.qty);
+                });
+            } else {
+                addOrderItemRow();
+            }
+
+            window.scrollTo({ top: 150, behavior: 'smooth' });
+        }
+
+        function deleteOrder(orderNo) {
+            if(!confirm(`Are you sure you want to cancel / delete Order '${orderNo}'?`)) return;
+
+            fetch('/api/delete-order', {
+                method: 'POST',
+                headers: { 
+                    'Content-Type': 'application/json',
+                    'x-access-token': authToken 
+                },
+                body: JSON.stringify({ order_no: orderNo })
             })
             .then(res => handleApiResponse(res))
             .then(data => {
                 if(data) {
                     alert(data.message);
                     fetchOrders();
-                    fetchItemMastersList();
                 }
             });
         }
@@ -733,7 +826,7 @@ HTML_TEMPLATE = r"""
                     `<button class="btn btn-edit" onclick="openPartyModal('ALTER', '${pJson}')">✏️ Edit</button> <button class="btn btn-danger" onclick="deletePartySoft('${p.party_name}')">🗑️ Delete</button>`;
 
                 tbody.innerHTML += `<tr>
-                    <td><b>${p.party_name}</b><br><small>${p.mobile} | ${p.city_beat}</small><br>${badge}</td>
+                    <td><b>${p.party_name}</b><br><small>${p.mobile || '--'} | ${p.city_beat}</small><br>${badge}</td>
                     <td>${btnHtml}</td>
                 </tr>`;
             });
@@ -919,10 +1012,11 @@ HTML_TEMPLATE = r"""
             .then(res => handleApiResponse(res))
             .then(orders => {
                 if(orders) {
+                    masterOrdersList = orders;
                     var tbody = document.getElementById('ordersAuditBody');
                     tbody.innerHTML = '';
                     if(!orders || orders.length === 0) {
-                        tbody.innerHTML = '<tr><td colspan="2" style="text-align:center;">No orders found.</td></tr>';
+                        tbody.innerHTML = '<tr><td colspan="3" style="text-align:center;">No orders found.</td></tr>';
                         return;
                     }
                     orders.forEach(o => {
@@ -936,6 +1030,10 @@ HTML_TEMPLATE = r"""
                         tbody.innerHTML += `<tr>
                             <td><b>${o.order_no}</b><br><small>${o.date}</small><br><b>${o.party_name}</b> (${o.city_village})<br><small>By: ${o.salesman_id}</small></td>
                             <td><small>${itemsDetail}</small><br><b style="color:#166534; font-size:15px;">Total: ₹${o.grand_total}</b></td>
+                            <td>
+                                <button class="btn btn-edit" style="margin-bottom:4px;" onclick="editOrder('${o.order_no}')">✏️ Edit</button>
+                                <button class="btn btn-danger" onclick="deleteOrder('${o.order_no}')">🗑️ Cancel</button>
+                            </td>
                         </tr>`;
                     });
                 }
@@ -1015,7 +1113,6 @@ def login():
             'exp': datetime.now(timezone.utc) + timedelta(days=365)
         }, app.config['SECRET_KEY'], algorithm="HS256")
 
-        # Save active single session token in DB
         cursor.execute("UPDATE users SET current_token = ? WHERE LOWER(user_id) = LOWER(?)", (token, u_id))
         conn.commit()
         conn.close()
@@ -1169,7 +1266,7 @@ def import_tally_xml(current_user, current_role, company_code):
 @token_required
 def create_order_multi(current_user, current_role, company_code):
     data = request.json
-    ord_no = f"ORD-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+    ord_no = data.get('order_no') or f"ORD-{datetime.now().strftime('%Y%m%d%H%M%S')}"
     ord_date = datetime.now().strftime("%Y-%m-%d %H:%M")
     
     import json
@@ -1177,14 +1274,37 @@ def create_order_multi(current_user, current_role, company_code):
 
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    cursor.execute('''
-        INSERT INTO orders (company_code, order_no, order_date, salesman_id, party_name, gst_status, assigned_state, city_village, items_json, grand_total)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (company_code, ord_no, ord_date, current_user, data.get('party_name'), data.get('gst_status'), data.get('state'), data.get('city'), items_json_str, data.get('grand_total')))
+    
+    if data.get('order_no'):
+        cursor.execute('''
+            UPDATE orders 
+            SET party_name = ?, gst_status = ?, assigned_state = ?, city_village = ?, items_json = ?, grand_total = ?
+            WHERE company_code = ? AND order_no = ?
+        ''', (data.get('party_name'), data.get('gst_status'), data.get('state'), data.get('city'), items_json_str, data.get('grand_total'), company_code, ord_no))
+    else:
+        cursor.execute('''
+            INSERT INTO orders (company_code, order_no, order_date, salesman_id, party_name, gst_status, assigned_state, city_village, items_json, grand_total)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (company_code, ord_no, ord_date, current_user, data.get('party_name'), data.get('gst_status'), data.get('state'), data.get('city'), items_json_str, data.get('grand_total')))
+    
     conn.commit()
     conn.close()
 
-    return jsonify({"status": "success", "message": f"🎉 Multi-Item Order '{ord_no}' Placed Successfully!"})
+    return jsonify({"status": "success", "order_no": ord_no, "message": f"🎉 Multi-Item Order '{ord_no}' Saved Successfully!"})
+
+@app.route('/api/delete-order', methods=['POST'])
+@token_required
+def delete_order(current_user, current_role, company_code):
+    data = request.json
+    ord_no = data.get('order_no')
+
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute('DELETE FROM orders WHERE company_code = ? AND order_no = ?', (company_code, ord_no))
+    conn.commit()
+    conn.close()
+
+    return jsonify({"status": "success", "message": f"🗑️ Order '{ord_no}' Cancelled and Deleted!"})
 
 @app.route('/api/get-orders')
 @token_required
@@ -1192,9 +1312,9 @@ def get_orders(current_user, current_role, company_code):
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     if current_role == 'ADMIN':
-        cursor.execute('SELECT order_no, order_date, party_name, gst_status, city_village, items_json, salesman_id, grand_total FROM orders WHERE company_code = ? ORDER BY id DESC', (company_code,))
+        cursor.execute('SELECT order_no, order_date, party_name, gst_status, city_village, items_json, salesman_id, grand_total, assigned_state FROM orders WHERE company_code = ? ORDER BY id DESC', (company_code,))
     else:
-        cursor.execute('SELECT order_no, order_date, party_name, gst_status, city_village, items_json, salesman_id, grand_total FROM orders WHERE company_code = ? AND salesman_id = ? ORDER BY id DESC', (company_code, current_user))
+        cursor.execute('SELECT order_no, order_date, party_name, gst_status, city_village, items_json, salesman_id, grand_total, assigned_state FROM orders WHERE company_code = ? AND salesman_id = ? ORDER BY id DESC', (company_code, current_user))
 
     import json
     rows = []
@@ -1208,7 +1328,8 @@ def get_orders(current_user, current_role, company_code):
             "city_village": r[4],
             "items": items_arr,
             "salesman_id": r[6],
-            "grand_total": r[7]
+            "grand_total": r[7],
+            "assigned_state": r[8]
         })
 
     conn.close()
