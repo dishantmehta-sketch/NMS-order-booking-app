@@ -93,9 +93,16 @@ def init_db():
             role TEXT,
             assigned_state TEXT DEFAULT 'Madhya Pradesh',
             assigned_city TEXT DEFAULT 'Ratlam',
+            current_token TEXT DEFAULT '',
             status TEXT DEFAULT 'Active'
         )
     ''')
+
+    # Migration check for existing DB without current_token column
+    try:
+        cursor.execute("ALTER TABLE users ADD COLUMN current_token TEXT DEFAULT ''")
+    except:
+        pass
 
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS tally_parties (
@@ -148,7 +155,6 @@ def init_db():
     conn.commit()
     conn.close()
 
-    # JUGAD: Auto Parse Master.xml if available in repository!
     if os.path.exists(LOCAL_XML_FILE):
         try:
             with open(LOCAL_XML_FILE, 'rb') as f:
@@ -170,6 +176,17 @@ def token_required(f):
             current_user = data['user_id']
             current_role = data['role']
             company_code = data['company_code']
+
+            # Single Session Check: Verify if token matches current active token in DB
+            conn = sqlite3.connect(DB_FILE)
+            cursor = conn.cursor()
+            cursor.execute("SELECT current_token FROM users WHERE LOWER(user_id) = LOWER(?)", (current_user,))
+            row = cursor.fetchone()
+            conn.close()
+
+            if not row or row[0] != token:
+                return jsonify({'status': 'session_expired', 'message': 'Logged in from another device! Please login again.'}), 401
+
         except:
             return jsonify({'status': 'error', 'message': 'Invalid Token or Session Expired.'}), 401
         return f(current_user, current_role, company_code, *args, **kwargs)
@@ -180,90 +197,115 @@ HTML_TEMPLATE = r"""
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>New Mehta Sales Corporation Order Portal</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>New Mehta Sales Corporation - Order Portal</title>
     <style>
-        body { font-family: 'Segoe UI', Tahoma, sans-serif; background: #0f172a; color: #f8fafc; margin: 0; padding: 10px; }
-        .header { background: #1e3a8a; padding: 12px 20px; border-radius: 6px; display: flex; justify-content: space-between; align-items: center; }
-        .card { background: #ffffff; color: #0f172a; padding: 20px; border-radius: 8px; margin-top: 15px; }
-        .row { display: flex; gap: 10px; flex-wrap: wrap; }
-        .col { flex: 1; min-width: 140px; }
-        select, input { width: 100%; padding: 10px; border: 1px solid #cbd5e1; border-radius: 5px; font-size: 14px; box-sizing: border-box; }
-        .btn { background-color: #1e3a8a; color: white; padding: 10px 16px; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; }
+        * { box-sizing: border-box; font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+        body { background: #0f172a; color: #0f172a; margin: 0; padding: 10px 5px; font-size: 16px; }
+        
+        /* Mobile Portrait View Wrapper */
+        .app-container { max-width: 480px; margin: 0 auto; background: #f8fafc; border-radius: 12px; min-height: 95vh; padding: 12px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); }
+        
+        /* Centered Header Bar Styling */
+        .header { background: linear-gradient(135deg, #1e3a8a, #0f172a); color: white; padding: 18px 10px; border-radius: 10px; text-align: center; margin-bottom: 15px; }
+        .header h1 { margin: 0; font-size: 24px; font-weight: 800; letter-spacing: 0.5px; line-height: 1.2; text-transform: uppercase; }
+        .header h3 { margin: 6px 0 0 0; font-size: 16px; font-weight: 500; color: #93c5fd; text-transform: uppercase; letter-spacing: 1px; }
+        
+        .card { background: #ffffff; padding: 16px; border-radius: 10px; margin-top: 12px; border: 1px solid #e2e8f0; box-shadow: 0 2px 6px rgba(0,0,0,0.05); }
+        
+        /* Increased Font Controls */
+        label { font-size: 15px; font-weight: 600; color: #334155; margin-bottom: 4px; display: block; }
+        select, input { width: 100%; padding: 12px 14px; border: 1.5px solid #cbd5e1; border-radius: 8px; font-size: 16px; color: #0f172a; background: #fff; outline: none; transition: 0.2s; }
+        select:focus, input:focus { border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.2); }
+        
+        /* Buttons */
+        .btn { background-color: #1e3a8a; color: white; padding: 14px; border: none; border-radius: 8px; cursor: pointer; font-weight: 700; font-size: 16px; width: 100%; text-align: center; }
         .btn-add { background-color: #16a34a; }
-        .btn-edit { background-color: #0284c7; padding: 4px 8px; font-size: 11px; }
-        .btn-warn { background-color: #d97706; padding: 4px 8px; font-size: 11px; }
-        .btn-danger { background-color: #dc2626; padding: 4px 8px; font-size: 11px; }
-        .btn-link { background: none; border: none; color: #0284c7; cursor: pointer; text-decoration: underline; font-size: 13px; padding: 0; margin-top: 10px; }
-        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-        th, td { border: 1px solid #cbd5e1; padding: 8px; text-align: left; font-size: 13px; }
-        th { background-color: #1e3a8a; color: white; }
-        .badge { padding: 4px 8px; border-radius: 4px; font-size: 11px; font-weight: bold; color: white; }
+        .btn-edit { background-color: #0284c7; padding: 8px 12px; font-size: 14px; width: auto; }
+        .btn-warn { background-color: #d97706; padding: 8px 12px; font-size: 14px; width: auto; }
+        .btn-danger { background-color: #dc2626; padding: 8px 12px; font-size: 14px; width: auto; }
+        .btn-link { background: none; border: none; color: #0284c7; cursor: pointer; text-decoration: underline; font-size: 15px; padding: 0; margin-top: 10px; }
+        
+        /* Tables & Lists */
+        .table-responsive { overflow-x: auto; -webkit-overflow-scrolling: touch; margin-top: 10px; }
+        table { width: 100%; border-collapse: collapse; font-size: 14px; }
+        th, td { border: 1px solid #cbd5e1; padding: 10px 8px; text-align: left; }
+        th { background-color: #1e3a8a; color: white; font-size: 14px; }
+        
+        .badge { padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: bold; color: white; display: inline-block; }
         .badge-urd { background: #d97706; }
         .badge-reg { background: #16a34a; }
-        .order-form { background: #f8fafc; border: 2px solid #3b82f6; padding: 15px; border-radius: 8px; margin-top: 15px; }
-        .tally-box { background: #f0fdf4; border: 1px solid #16a34a; padding: 12px; border-radius: 6px; margin-bottom: 15px; }
-        .menu-btn { background: #0284c7; color: white; border: none; padding: 12px 18px; border-radius: 6px; font-weight: bold; cursor: pointer; }
-        .modal { display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.6); align-items:center; justify-content:center; z-index:999; }
-        .modal-content { background:white; color:#0f172a; padding:20px; border-radius:8px; width:95%; max-width:700px; max-height:85vh; overflow-y:auto; }
+        
+        .order-form { background: #ffffff; border: 2px solid #2563eb; padding: 14px; border-radius: 10px; margin-top: 15px; }
+        .tally-box { background: #f0fdf4; border: 1px solid #16a34a; padding: 12px; border-radius: 8px; margin-bottom: 12px; }
+        .menu-btn { background: #0284c7; color: white; border: none; padding: 12px; border-radius: 8px; font-weight: bold; cursor: pointer; font-size: 14px; flex: 1 1 45%; }
+        
+        /* Modals for Mobile */
+        .modal { display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.7); align-items:center; justify-content:center; z-index:999; padding:10px; }
+        .modal-content { background:white; color:#0f172a; padding:18px; border-radius:12px; width:100%; max-width:450px; max-height:90vh; overflow-y:auto; box-shadow: 0 10px 30px rgba(0,0,0,0.3); }
+        
+        .search-box-wrapper { position: relative; margin-bottom: 8px; }
+        .search-box-wrapper input { padding-left: 36px; background: #f1f5f9; border-color: #cbd5e1; }
+        .search-icon { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); font-size: 16px; color: #64748b; }
     </style>
 </head>
 <body>
-    <div class="header">
-        <h2>🌐 New Mehta Sales Corporation Order Portal</h2>
-        <span>System Status: <b>Auto-Sync Stock Connected</b></span>
-    </div>
 
-    <!-- LOGIN BOX -->
-    <div id="loginCard" class="card" style="max-width: 400px; margin: 40px auto;">
-        <h3 style="margin-top:0;">🔒 User Login Portal</h3>
-        <div class="form-group" style="margin-bottom:12px;">
-            <label>User ID / Salesman ID:</label>
-            <input type="text" id="loginUser" placeholder="e.g. admin or NMS1">
-        </div>
-        <div class="form-group" style="margin-bottom:15px;">
-            <label>Password:</label>
-            <input type="password" id="loginPass" placeholder="Password">
-        </div>
-        <button class="btn" style="width:100%;" onclick="doLogin()">🔐 Secure Login</button>
-        <div style="text-align:center; margin-top:12px;">
-            <button class="btn-link" onclick="openForgetModal()">🔑 Forget / Reset Password?</button>
-        </div>
-    </div>
-
-    <!-- MAIN DASHBOARD -->
-    <div id="mainPortal" class="card" style="display:none;">
-        <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:2px solid #e2e8f0; padding-bottom:10px;">
-            <h3>Welcome, <span id="userName">User</span> (<span id="userRole">Role</span>)</h3>
-            <button class="btn" style="width:auto; background:#dc2626;" onclick="logout()">Logout</button>
+    <div class="app-container">
+        <!-- HEADER CENTERED & SCALED -->
+        <div class="header">
+            <h1>New Mehta Sales Corporation</h1>
+            <h3>Order Portal</h3>
         </div>
 
-        <!-- PC / ADMIN REAL XML IMPORT PANEL -->
-        <div id="tallyImportPanel" class="tally-box" style="display:none; margin-top:15px;">
-            <h4 style="margin-top:0; color:#166534;">💻 Admin PC Control: Manual Re-Import Tally XML File</h4>
-            <div style="display:flex; gap:10px; align-items:center;">
-                <input type="file" id="tallyXmlFile" accept=".xml">
-                <button class="btn btn-add" style="width:220px;" onclick="uploadTallyXml()">📥 Parse & Update XML</button>
+        <!-- LOGIN BOX -->
+        <div id="loginCard" class="card" style="margin-top: 20px;">
+            <h3 style="margin-top:0; text-align:center; color:#1e3a8a; font-size:20px;">🔒 User Login</h3>
+            <div style="margin-bottom:14px;">
+                <label>User ID / Salesman ID:</label>
+                <input type="text" id="loginUser" placeholder="e.g. admin or NMS1">
+            </div>
+            <div style="margin-bottom:18px;">
+                <label>Password:</label>
+                <input type="password" id="loginPass" placeholder="Password">
+            </div>
+            <button class="btn" onclick="doLogin()">🔐 Secure Login</button>
+            <div style="text-align:center; margin-top:14px;">
+                <button class="btn-link" onclick="openForgetModal()">🔑 Forget / Reset Password?</button>
             </div>
         </div>
 
-        <!-- TALLY ACCOUNT INFO HIERARCHY MODULE -->
-        <div class="card" style="background:#f1f5f9; border:1px solid #cbd5e1; margin-top:15px;">
-            <h4 style="margin-top:0; color:#1e3a8a;">📁 ACCOUNT INFO (Party Ledger Masters)</h4>
-            <div style="display:flex; gap:10px; flex-wrap:wrap;">
-                <button class="menu-btn" style="background:#16a34a;" onclick="openPartyModal('CREATE')">➕ CREATE Party</button>
-                <button class="menu-btn" style="background:#0284c7;" onclick="openViewModal('DISPLAY')">🔍 DISPLAY Parties</button>
-                <button class="menu-btn" style="background:#d97706;" onclick="openViewModal('ALTER')">✏️ ALTER Parties</button>
-                <button class="menu-btn" style="background:#dc2626;" onclick="openTrashModal()">🗑️ DELETE Trash (30 Days Auto-Expire)</button>
+        <!-- MAIN DASHBOARD -->
+        <div id="mainPortal" style="display:none;">
+            <div style="display:flex; justify-content:space-between; align-items:center; background:#e2e8f0; padding:10px 12px; border-radius:8px;">
+                <div style="font-size:15px; font-weight:bold;">👤 <span id="userName">User</span> (<span id="userRole">Role</span>)</div>
+                <button class="btn btn-danger" style="padding:6px 12px; font-size:13px;" onclick="logout()">Logout</button>
             </div>
-        </div>
 
-        <!-- FIELD SALES MULTI-ITEM ORDER ENTRY FORM -->
-        <div class="order-form">
-            <h4 style="margin-top:0; color:#1e3a8a;">📦 Field Sales Order Booking (Auto-Loaded Persistent Stock)</h4>
-            <div class="row" style="margin-bottom:10px;">
-                <div class="col">
-                    <label><b>1. State:</b></label>
+            <!-- ADMIN XML IMPORT PANEL -->
+            <div id="tallyImportPanel" class="tally-box" style="display:none; margin-top:12px;">
+                <h4 style="margin:0 0 8px 0; color:#166534; font-size:15px;">💻 Admin: Re-Import Master.xml</h4>
+                <input type="file" id="tallyXmlFile" accept=".xml" style="margin-bottom:8px; font-size:13px;">
+                <button class="btn btn-add" style="padding:10px; font-size:14px;" onclick="uploadTallyXml()">📥 Update XML Data</button>
+            </div>
+
+            <!-- ACCOUNT INFO MODULE -->
+            <div class="card" style="background:#f1f5f9; border:1px solid #cbd5e1; margin-top:12px; padding:12px;">
+                <h4 style="margin:0 0 10px 0; color:#1e3a8a; font-size:16px;">📁 ACCOUNT INFO (Parties Master)</h4>
+                <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                    <button class="menu-btn" style="background:#16a34a;" onclick="openPartyModal('CREATE')">➕ CREATE Party</button>
+                    <button class="menu-btn" style="background:#0284c7;" onclick="openViewModal('DISPLAY')">🔍 DISPLAY List</button>
+                    <button class="menu-btn" style="background:#d97706;" onclick="openViewModal('ALTER')">✏️ ALTER / Edit</button>
+                    <button class="menu-btn" style="background:#dc2626;" onclick="openTrashModal()">🗑️ Trash Bin</button>
+                </div>
+            </div>
+
+            <!-- FIELD SALES ORDER FORM -->
+            <div class="order-form">
+                <h4 style="margin:0 0 12px 0; color:#1e3a8a; font-size:18px;">📦 Book Sales Order</h4>
+                
+                <div style="margin-bottom:10px;">
+                    <label>1. State:</label>
                     <select id="ordState">
                         <option value="Madhya Pradesh">Madhya Pradesh</option>
                         <option value="Gujarat">Gujarat</option>
@@ -271,89 +313,93 @@ HTML_TEMPLATE = r"""
                         <option value="Rajasthan">Rajasthan</option>
                     </select>
                 </div>
-                <div class="col">
-                    <label><b>2. Beat / City:</b></label>
+                
+                <div style="margin-bottom:10px;">
+                    <label>2. Beat / City:</label>
                     <select id="ordCity" onchange="filterOrderParties()">
                         <option value="Ratlam">Ratlam</option>
                         <option value="Ujjain">Ujjain</option>
                         <option value="Indore">Indore</option>
                     </select>
                 </div>
-                <div class="col">
-                    <label><b>3. Select Customer / Party:</b></label>
-                    <select id="ordParty" onchange="updateSelectedPartyCard()">
-                        <option value="">-- Select Party --</option>
+
+                <div style="margin-bottom:12px;">
+                    <label>3. Search & Select Party Name:</label>
+                    <div class="search-box-wrapper">
+                        <span class="search-icon">🔍</span>
+                        <input type="text" id="partySearchInput" placeholder="Type party name to filter..." oninput="filterPartyListBySearch()">
+                    </div>
+                    <select id="ordParty" size="4" style="height: 110px;" onchange="updateSelectedPartyCard()">
+                        <!-- Dynamic Options -->
                     </select>
                 </div>
+
+                <div id="partyCardInfo" style="display:none; background:#e0f2fe; padding:10px; border-radius:8px; margin-bottom:12px; font-size:14px; color:#0369a1; border:1px solid #bae6fd;">
+                    <b>GST Type:</b> <span id="cardGst">--</span><br>
+                    <b>Mobile:</b> <span id="cardMobile">--</span><br>
+                    <b>Address:</b> <span id="cardAddr">--</span>
+                </div>
+
+                <hr style="margin:15px 0; border:0; border-top:1px solid #cbd5e1;">
+                
+                <h4 style="margin:0 0 10px 0; color:#1e3a8a; font-size:16px;">🛒 Add Items:</h4>
+                <div id="orderItemsContainer">
+                    <!-- Multi-Item Rows -->
+                </div>
+
+                <button class="btn btn-edit" style="margin-top:8px; width:100%; padding:10px;" onclick="addOrderItemRow()">➕ Add Another Stock Item Row</button>
+
+                <div style="margin-top:15px; text-align:right; font-size:19px; font-weight:bold; color:#166534; background:#dcfce7; padding:10px; border-radius:6px;">
+                    Total Amount: ₹<span id="grandOrderTotal">0.00</span>
+                </div>
+
+                <button class="btn btn-add" style="margin-top:15px;" onclick="submitSalesOrder()">📝 Submit Complete Order</button>
             </div>
 
-            <div id="partyCardInfo" style="display:none; background:#e0f2fe; padding:8px; border-radius:5px; margin-bottom:12px; font-size:12px; color:#0369a1;">
-                <b>GST Type:</b> <span id="cardGst">--</span> | <b>Mobile:</b> <span id="cardMobile">--</span> | <b>Address:</b> <span id="cardAddr">--</span>
+            <h4 style="margin-top:20px; font-size:18px;">📑 Recent Orders Audit</h4>
+            <div class="table-responsive">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Order Details</th>
+                            <th>Items & Total</th>
+                        </tr>
+                    </thead>
+                    <tbody id="ordersAuditBody">
+                        <tr><td colspan="2">Loading...</td></tr>
+                    </tbody>
+                </table>
             </div>
-
-            <hr style="margin:15px 0; border:0; border-top:1px solid #cbd5e1;">
-            
-            <h5 style="margin:0 0 10px 0; color:#1e3a8a;">🛒 Multi-Item Order Grid (Items Persistent):</h5>
-            <div id="orderItemsContainer">
-                <!-- Multi-Item Rows inserted dynamically -->
-            </div>
-
-            <button class="btn btn-edit" style="margin-top:10px; width:auto;" onclick="addOrderItemRow()">➕ Add Another Item Row</button>
-
-            <div style="margin-top:15px; text-align:right; font-size:18px; font-weight:bold; color:#166534;">
-                Grand Order Total: ₹<span id="grandOrderTotal">0.00</span>
-            </div>
-
-            <button class="btn btn-add" style="width:100%; font-size:16px; margin-top:15px;" onclick="submitSalesOrder()">📝 Submit Complete Sales Order</button>
         </div>
 
-        <h4 style="margin-top:25px;">📑 Real-Time Orders Audit Trail</h4>
-        <table>
-            <thead>
-                <tr>
-                    <th>Order No</th>
-                    <th>Date</th>
-                    <th>Customer Party</th>
-                    <th>City/Beat</th>
-                    <th>Items Ordered Detail</th>
-                    <th>Salesman ID</th>
-                    <th>Grand Total Amount</th>
-                </tr>
-            </thead>
-            <tbody id="ordersAuditBody">
-                <tr><td colspan="7">Loading Orders...</td></tr>
-            </tbody>
-        </table>
     </div>
 
-    <!-- FORGET / RESET PASSWORD MODAL -->
+    <!-- FORGET PASSWORD MODAL -->
     <div id="forgetModal" class="modal">
-        <div class="modal-content" style="max-width:400px;">
-            <h3 style="margin-top:0; color:#1e3a8a;">🔑 Forget / Reset Password</h3>
-            <p style="font-size:12px; color:#64748b;">Apni Registered User ID, Email ya Mobile Number Enter Karein:</p>
-            <div class="form-group" style="margin-bottom:12px;">
+        <div class="modal-content">
+            <h3 style="margin-top:0; color:#1e3a8a;">🔑 Reset Password</h3>
+            <p style="font-size:14px; color:#64748b;">Enter Registered User ID, Email, or Mobile:</p>
+            <div style="margin-bottom:14px;">
                 <input type="text" id="resetQuery" placeholder="User ID / Email / Mobile">
             </div>
-            <button class="btn btn-add" style="width:100%;" onclick="sendResetVerification()">📩 Verify & Reset Password</button>
-            <div style="text-align:center; margin-top:12px;">
-                <button class="btn-danger" style="width:100%;" onclick="closeModal('forgetModal')">Close Window</button>
-            </div>
+            <button class="btn btn-add" onclick="sendResetVerification()">Verify & Reset</button>
+            <button class="btn btn-danger" style="width:100%; margin-top:10px;" onclick="closeModal('forgetModal')">Close Window</button>
         </div>
     </div>
 
     <!-- CREATE / ALTER PARTY MODAL -->
     <div id="partyModal" class="modal">
         <div class="modal-content">
-            <h3 id="modalTitle" style="margin-top:0; color:#1e3a8a;">Party Master</h3>
+            <h3 id="modalTitle" style="margin-top:0; color:#1e3a8a; font-size:18px;">Party Master</h3>
             <input type="hidden" id="modalMode" value="CREATE">
             <input type="hidden" id="modalOrigName" value="">
             
             <div style="margin-bottom:10px;">
-                <label style="font-size:12px;">Party / Shop Name:</label>
+                <label>Party / Shop Name:</label>
                 <input type="text" id="pName" placeholder="Full Party Name">
             </div>
             <div style="margin-bottom:10px;">
-                <label style="font-size:12px;">GST Registration Status:</label>
+                <label>GST Registration Status:</label>
                 <select id="pGstStatus">
                     <option value="Unregistered / URD">Unregistered / URD</option>
                     <option value="Registered / Regular">Registered / Regular</option>
@@ -361,25 +407,25 @@ HTML_TEMPLATE = r"""
                 </select>
             </div>
             <div style="margin-bottom:10px;">
-                <label style="font-size:12px;">GSTIN Number (Optional):</label>
-                <input type="text" id="pGstin" placeholder="GSTIN (if Registered)">
+                <label>GSTIN Number (Optional):</label>
+                <input type="text" id="pGstin" placeholder="GSTIN">
             </div>
             <div style="margin-bottom:10px;">
-                <label style="font-size:12px;">Mobile Number:</label>
+                <label>Mobile Number:</label>
                 <input type="tel" id="pMobile" placeholder="Mobile Number">
             </div>
             <div style="margin-bottom:10px;">
-                <label style="font-size:12px;">City / Village / Beat:</label>
+                <label>City / Beat:</label>
                 <input type="text" id="pCity" placeholder="e.g. Ratlam">
             </div>
             <div style="margin-bottom:15px;">
-                <label style="font-size:12px;">Address Details:</label>
+                <label>Address Details:</label>
                 <input type="text" id="pAddress" placeholder="Full Address">
             </div>
 
-            <div style="display:flex; justify-content:space-between; gap:10px;">
-                <button class="btn btn-danger" style="width:50%;" onclick="closeModal('partyModal')">Close</button>
-                <button id="modalSaveBtn" class="btn btn-add" style="width:50%;" onclick="savePartyMaster()">Save Party Master</button>
+            <div style="display:flex; gap:10px;">
+                <button class="btn btn-danger" style="flex:1;" onclick="closeModal('partyModal')">Close</button>
+                <button id="modalSaveBtn" class="btn btn-add" style="flex:1;" onclick="savePartyMaster()">Save Party</button>
             </div>
         </div>
     </div>
@@ -387,45 +433,49 @@ HTML_TEMPLATE = r"""
     <!-- DISPLAY / ALTER VIEW MODAL -->
     <div id="viewPartiesModal" class="modal">
         <div class="modal-content">
-            <h3 id="viewModalTitle" style="margin-top:0; color:#1e3a8a;">Party Masters List</h3>
-            <table>
-                <thead>
-                    <tr>
-                        <th>Party Name</th>
-                        <th>GST Status</th>
-                        <th>Mobile</th>
-                        <th>Beat/City</th>
-                        <th>Action</th>
-                    </tr>
-                </thead>
-                <tbody id="viewPartiesBody">
-                    <!-- Populated dynamically -->
-                </tbody>
-            </table>
-            <button class="btn btn-danger" style="width:100%; margin-top:15px;" onclick="closeModal('viewPartiesModal')">Close View Window</button>
+            <h3 id="viewModalTitle" style="margin-top:0; color:#1e3a8a; font-size:18px;">Party List</h3>
+            <div class="table-responsive">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Party Details</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="viewPartiesBody">
+                        <!-- Populated dynamically -->
+                    </tbody>
+                </table>
+            </div>
+            <button class="btn btn-danger" style="width:100%; margin-top:15px;" onclick="closeModal('viewPartiesModal')">Close Window</button>
         </div>
     </div>
 
-    <!-- 30-DAYS TRASH BIN MODAL -->
+    <!-- TRASH MODAL -->
     <div id="trashModal" class="modal">
         <div class="modal-content">
-            <h3 style="margin-top:0; color:#dc2626;">🗑️ Deleted Parties Trash (30 Days Auto-Expire)</h3>
-            <p style="font-size:12px; color:#64748b;">Ye parties delete ki gayi hain aur 30 din baad permanently auto-delete ho jayengi:</p>
-            <table>
-                <thead>
-                    <tr>
-                        <th>Party Name</th>
-                        <th>Deleted Date</th>
-                        <th>Action</th>
-                    </tr>
-                </thead>
-                <tbody id="trashPartiesBody">
-                    <!-- Populated dynamically -->
-                </tbody>
-            </table>
-            <button class="btn btn-danger" style="width:100%; margin-top:15px;" onclick="closeModal('trashModal')">Close Trash Window</button>
+            <h3 style="margin-top:0; color:#dc2626; font-size:18px;">🗑️ Deleted Parties Trash</h3>
+            <div class="table-responsive">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Party Name</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="trashPartiesBody">
+                        <!-- Populated dynamically -->
+                    </tbody>
+                </table>
+            </div>
+            <button class="btn btn-danger" style="width:100%; margin-top:15px;" onclick="closeModal('trashModal')">Close Window</button>
         </div>
     </div>
+
+    <!-- DATALIST FOR GLOBAL ITEM SEARCHING IN ORDER GRID -->
+    <datalist id="masterItemsDatalist">
+        <!-- Populated dynamically -->
+    </datalist>
 
     <script>
         var authToken = localStorage.getItem('jwt_token');
@@ -433,25 +483,27 @@ HTML_TEMPLATE = r"""
         var masterItemsList = [];
         var orderItemRowIndex = 0;
 
-        function openForgetModal() {
-            document.getElementById('forgetModal').style.display = 'flex';
-        }
-
-        function sendResetVerification() {
-            var q = document.getElementById('resetQuery').value.trim();
-            if(!q) return alert('User ID / Email / Mobile Enter Karein!');
-
-            fetch('/api/forget-password', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ query: q })
-            })
-            .then(res => res.json())
-            .then(data => {
-                alert(data.message);
-                closeModal('forgetModal');
-            });
-        }
+        // Auto Login Check on Load
+        window.onload = function() {
+            if(authToken) {
+                fetch('/api/verify-token', {
+                    headers: { 'x-access-token': authToken }
+                })
+                .then(res => res.json())
+                .then(data => {
+                    if(data.status === 'success') {
+                        loadPortal(data);
+                    } else {
+                        localStorage.removeItem('jwt_token');
+                        authToken = null;
+                    }
+                })
+                .catch(() => {
+                    localStorage.removeItem('jwt_token');
+                    authToken = null;
+                });
+            }
+        };
 
         function doLogin() {
             var u = document.getElementById('loginUser').value.trim();
@@ -494,10 +546,12 @@ HTML_TEMPLATE = r"""
             fetch('/api/get-tally-parties', {
                 headers: { 'x-access-token': authToken }
             })
-            .then(res => res.json())
+            .then(res => handleApiResponse(res))
             .then(parties => {
-                masterPartiesList = parties;
-                filterOrderParties();
+                if(parties) {
+                    masterPartiesList = parties;
+                    filterOrderParties();
+                }
             });
         }
 
@@ -505,13 +559,42 @@ HTML_TEMPLATE = r"""
             fetch('/api/get-tally-items', {
                 headers: { 'x-access-token': authToken }
             })
-            .then(res => res.json())
+            .then(res => handleApiResponse(res))
             .then(items => {
-                masterItemsList = items;
-                document.getElementById('orderItemsContainer').innerHTML = '';
-                orderItemRowIndex = 0;
-                addOrderItemRow();
+                if(items) {
+                    masterItemsList = items;
+                    updateItemDatalist();
+                    document.getElementById('orderItemsContainer').innerHTML = '';
+                    orderItemRowIndex = 0;
+                    addOrderItemRow();
+                }
             });
+        }
+
+        function updateItemDatalist() {
+            var datalist = document.getElementById('masterItemsDatalist');
+            datalist.innerHTML = '';
+            masterItemsList.forEach(i => {
+                datalist.innerHTML += `<option value="${i.item_name}">${i.item_name} [${i.uom}]</option>`;
+            });
+        }
+
+        function filterOrderParties() {
+            document.getElementById('partySearchInput').value = '';
+            filterPartyListBySearch();
+        }
+
+        function filterPartyListBySearch() {
+            var city = document.getElementById('ordCity').value;
+            var searchText = document.getElementById('partySearchInput').value.toLowerCase();
+            var sel = document.getElementById('ordParty');
+            sel.innerHTML = '';
+
+            var filtered = masterPartiesList.filter(p => (p.city_beat === city || city === 'All') && p.party_name.toLowerCase().includes(searchText));
+            filtered.forEach(p => {
+                sel.innerHTML += `<option value="${p.party_name}">${p.party_name} (${p.gst_status})</option>`;
+            });
+            updateSelectedPartyCard();
         }
 
         function addOrderItemRow() {
@@ -519,32 +602,24 @@ HTML_TEMPLATE = r"""
             var container = document.getElementById('orderItemsContainer');
             var rowId = `itemRow_${orderItemRowIndex}`;
 
-            var optionsHtml = '<option value="">-- Select Stock Item --</option>';
-            if(masterItemsList && masterItemsList.length > 0) {
-                masterItemsList.forEach(i => {
-                    optionsHtml += `<option value="${i.item_name}">${i.item_name} [${i.uom}]</option>`;
-                });
-            }
-
-            var html = `<div id="${rowId}" class="row" style="margin-bottom:10px; background:#ffffff; padding:10px; border-radius:5px; border:1px solid #cbd5e1; align-items:center;">
-                <div class="col" style="flex:2;">
-                    <label style="font-size:11px;"><b>Select Item:</b></label>
-                    <select class="row-item-select" onchange="calcGrandTotal()">${optionsHtml}</select>
+            var html = `<div id="${rowId}" style="background:#f1f5f9; padding:10px; border-radius:8px; border:1px solid #cbd5e1; margin-bottom:10px;">
+                <div style="margin-bottom:6px;">
+                    <label style="font-size:13px;">🔍 Search & Select Item:</label>
+                    <input type="text" class="row-item-input" list="masterItemsDatalist" placeholder="Type stock item name..." onchange="calcGrandTotal()" oninput="calcGrandTotal()">
                 </div>
-                <div class="col">
-                    <label style="font-size:11px;"><b>Rate (₹):</b></label>
-                    <input type="number" class="row-item-rate" placeholder="Rate" step="any" oninput="calcGrandTotal()">
+                <div style="display:flex; gap:8px; margin-bottom:6px;">
+                    <div style="flex:1;">
+                        <label style="font-size:13px;">Rate (₹):</label>
+                        <input type="number" class="row-item-rate" placeholder="Rate" step="any" oninput="calcGrandTotal()">
+                    </div>
+                    <div style="flex:1;">
+                        <label style="font-size:13px;">Qty:</label>
+                        <input type="number" class="row-item-qty" value="1" step="any" oninput="calcGrandTotal()">
+                    </div>
                 </div>
-                <div class="col">
-                    <label style="font-size:11px;"><b>Quantity:</b></label>
-                    <input type="number" class="row-item-qty" placeholder="Qty" value="1" step="any" oninput="calcGrandTotal()">
-                </div>
-                <div class="col">
-                    <label style="font-size:11px;"><b>Row Total (₹):</b></label>
-                    <input type="number" class="row-item-total" value="0.00" readonly style="background:#f1f5f9; font-weight:bold;">
-                </div>
-                <div style="width:40px; text-align:center;">
-                    <button class="btn btn-danger" style="padding:8px 10px; margin-top:15px;" onclick="removeOrderItemRow('${rowId}')">❌</button>
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <div><b>Row Total: ₹<span class="row-item-total-text">0.00</span></b></div>
+                    <button class="btn btn-danger" style="padding:6px 12px; font-size:13px;" onclick="removeOrderItemRow('${rowId}')">❌ Remove</button>
                 </div>
             </div>`;
 
@@ -561,30 +636,18 @@ HTML_TEMPLATE = r"""
 
         function calcGrandTotal() {
             var container = document.getElementById('orderItemsContainer');
-            var rows = container.querySelectorAll('.row');
+            var rows = container.children;
             var grandTotal = 0;
 
-            rows.forEach(r => {
+            Array.from(rows).forEach(r => {
                 var rate = parseFloat(r.querySelector('.row-item-rate').value || 0);
                 var qty = parseFloat(r.querySelector('.row-item-qty').value || 0);
                 var rowTotal = rate * qty;
-                r.querySelector('.row-item-total').value = rowTotal.toFixed(2);
+                r.querySelector('.row-item-total-text').innerText = rowTotal.toFixed(2);
                 grandTotal += rowTotal;
             });
 
             document.getElementById('grandOrderTotal').innerText = grandTotal.toFixed(2);
-        }
-
-        function filterOrderParties() {
-            var city = document.getElementById('ordCity').value;
-            var sel = document.getElementById('ordParty');
-            sel.innerHTML = '<option value="">-- Select Party --</option>';
-
-            var filtered = masterPartiesList.filter(p => p.city_beat === city || city === 'All');
-            filtered.forEach(p => {
-                sel.innerHTML += `<option value="${p.party_name}">${p.party_name} (${p.gst_status})</option>`;
-            });
-            updateSelectedPartyCard();
         }
 
         function updateSelectedPartyCard() {
@@ -601,8 +664,63 @@ HTML_TEMPLATE = r"""
             }
         }
 
+        function submitSalesOrder() {
+            var state = document.getElementById('ordState').value;
+            var city = document.getElementById('ordCity').value;
+            var party = document.getElementById('ordParty').value;
+
+            if(!party) return alert('Please select a Party!');
+
+            var items = [];
+            var container = document.getElementById('orderItemsContainer');
+            var rows = container.children;
+
+            Array.from(rows).forEach(r => {
+                var itemName = r.querySelector('.row-item-input').value.trim();
+                var rate = parseFloat(r.querySelector('.row-item-rate').value || 0);
+                var qty = parseFloat(r.querySelector('.row-item-qty').value || 0);
+                var total = rate * qty;
+
+                if(itemName && rate > 0 && qty > 0) {
+                    items.push({ item_name: itemName, rate: rate, qty: qty, total: total });
+                }
+            });
+
+            if(items.length === 0) return alert('Please add at least 1 valid Item with Rate & Qty!');
+
+            var grandTotal = parseFloat(document.getElementById('grandOrderTotal').innerText || 0);
+            var pObj = masterPartiesList.find(p => p.party_name === party);
+            var gstStatus = pObj ? pObj.gst_status : 'URD';
+
+            fetch('/api/create-order-multi', {
+                method: 'POST',
+                headers: { 
+                    'Content-Type': 'application/json',
+                    'x-access-token': authToken 
+                },
+                body: JSON.stringify({ state: state, city: city, party_name: party, gst_status: gstStatus, items: items, grand_total: grandTotal })
+            })
+            .then(res => handleApiResponse(res))
+            .then(data => {
+                if(data) {
+                    alert(data.message);
+                    fetchOrders();
+                    fetchItemMastersList();
+                }
+            });
+        }
+
+        function handleApiResponse(res) {
+            if(res.status === 401) {
+                alert("⚠️ Session expired or logged in from another device!");
+                logout();
+                return null;
+            }
+            return res.json();
+        }
+
         function openViewModal(mode) {
-            document.getElementById('viewModalTitle').innerText = mode === 'DISPLAY' ? '🔍 DISPLAY Party Masters List' : '✏️ ALTER Party Masters List';
+            document.getElementById('viewModalTitle').innerText = mode === 'DISPLAY' ? '🔍 DISPLAY Parties' : '✏️ ALTER / Edit Parties';
             var tbody = document.getElementById('viewPartiesBody');
             tbody.innerHTML = '';
 
@@ -612,13 +730,10 @@ HTML_TEMPLATE = r"""
 
                 var btnHtml = mode === 'DISPLAY' ? 
                     `<button class="btn btn-warn" onclick="openPartyModal('DISPLAY', '${pJson}')">🔍 View</button>` :
-                    `<button class="btn btn-edit" onclick="openPartyModal('ALTER', '${pJson}')">✏️ Edit / Alter</button> <button class="btn btn-danger" onclick="deletePartySoft('${p.party_name}')">🗑️ Delete</button>`;
+                    `<button class="btn btn-edit" onclick="openPartyModal('ALTER', '${pJson}')">✏️ Edit</button> <button class="btn btn-danger" onclick="deletePartySoft('${p.party_name}')">🗑️ Delete</button>`;
 
                 tbody.innerHTML += `<tr>
-                    <td><b>${p.party_name}</b></td>
-                    <td>${badge}</td>
-                    <td>${p.mobile}</td>
-                    <td><b>${p.city_beat}</b></td>
+                    <td><b>${p.party_name}</b><br><small>${p.mobile} | ${p.city_beat}</small><br>${badge}</td>
                     <td>${btnHtml}</td>
                 </tr>`;
             });
@@ -630,23 +745,24 @@ HTML_TEMPLATE = r"""
             fetch('/api/get-deleted-parties', {
                 headers: { 'x-access-token': authToken }
             })
-            .then(res => res.json())
+            .then(res => handleApiResponse(res))
             .then(deletedParties => {
-                var tbody = document.getElementById('trashPartiesBody');
-                tbody.innerHTML = '';
+                if(deletedParties) {
+                    var tbody = document.getElementById('trashPartiesBody');
+                    tbody.innerHTML = '';
 
-                if(deletedParties.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="3" style="text-align:center;">Trash Bin is Empty.</td></tr>';
-                } else {
-                    deletedParties.forEach(p => {
-                        tbody.innerHTML += `<tr>
-                            <td><b>${p.party_name}</b></td>
-                            <td>${p.deleted_at}</td>
-                            <td><button class="btn btn-add" onclick="restoreParty('${p.party_name}')">🔄 Restore Party</button></td>
-                        </tr>`;
-                    });
+                    if(deletedParties.length === 0) {
+                        tbody.innerHTML = '<tr><td colspan="2" style="text-align:center;">Trash Bin is Empty.</td></tr>';
+                    } else {
+                        deletedParties.forEach(p => {
+                            tbody.innerHTML += `<tr>
+                                <td><b>${p.party_name}</b><br><small>${p.deleted_at}</small></td>
+                                <td><button class="btn btn-add" style="padding:6px 10px; font-size:12px;" onclick="restoreParty('${p.party_name}')">🔄 Restore</button></td>
+                            </tr>`;
+                        });
+                    }
+                    document.getElementById('trashModal').style.display = 'flex';
                 }
-                document.getElementById('trashModal').style.display = 'flex';
             });
         }
 
@@ -664,7 +780,7 @@ HTML_TEMPLATE = r"""
             var btn = document.getElementById('modalSaveBtn');
 
             if(mode === 'CREATE') {
-                document.getElementById('modalTitle').innerText = '➕ CREATE New Party Master';
+                document.getElementById('modalTitle').innerText = '➕ CREATE Party Master';
                 document.getElementById('modalOrigName').value = '';
                 pName.value = ''; pName.disabled = false;
                 pGst.value = 'Unregistered / URD'; pGst.disabled = false;
@@ -685,16 +801,16 @@ HTML_TEMPLATE = r"""
                 pAddr.value = p.address;
 
                 if(mode === 'DISPLAY') {
-                    document.getElementById('modalTitle').innerText = '🔍 DISPLAY Party Master Details';
+                    document.getElementById('modalTitle').innerText = '🔍 DISPLAY Party Master';
                     pName.disabled = true; pGst.disabled = true; pGstin.disabled = true;
                     pMob.disabled = true; pCity.disabled = true; pAddr.disabled = true;
                     btn.style.display = 'none';
                 } else if(mode === 'ALTER') {
-                    document.getElementById('modalTitle').innerText = '✏️ ALTER Party Master Details';
+                    document.getElementById('modalTitle').innerText = '✏️ ALTER Party Master';
                     pName.disabled = false; pGst.disabled = false; pGstin.disabled = false;
                     pMob.disabled = false; pCity.disabled = false; pAddr.disabled = false;
                     btn.style.display = 'block';
-                    btn.innerText = '💾 Update Altered Details';
+                    btn.innerText = '💾 Update Details';
                 }
             }
             modal.style.display = 'flex';
@@ -724,16 +840,18 @@ HTML_TEMPLATE = r"""
                 },
                 body: JSON.stringify({ mode: mode, orig_name: origName, party_name: name, gst_status: gst, gstin: gstin, mobile: mob, city_beat: city, address: addr })
             })
-            .then(res => res.json())
+            .then(res => handleApiResponse(res))
             .then(data => {
-                alert(data.message);
-                closeModal('partyModal');
-                fetchPartyMastersList();
+                if(data) {
+                    alert(data.message);
+                    closeModal('partyModal');
+                    fetchPartyMastersList();
+                }
             });
         }
 
         function deletePartySoft(partyName) {
-            if(!confirm(`Are you sure you want to delete '${partyName}'? (It will be kept in Trash for 30 Days)`)) return;
+            if(!confirm(`Delete '${partyName}'? (Kept in Trash for 30 Days)`)) return;
 
             fetch('/api/delete-party-soft', {
                 method: 'POST',
@@ -743,11 +861,13 @@ HTML_TEMPLATE = r"""
                 },
                 body: JSON.stringify({ party_name: partyName })
             })
-            .then(res => res.json())
+            .then(res => handleApiResponse(res))
             .then(data => {
-                alert(data.message);
-                closeModal('viewPartiesModal');
-                fetchPartyMastersList();
+                if(data) {
+                    alert(data.message);
+                    closeModal('viewPartiesModal');
+                    fetchPartyMastersList();
+                }
             });
         }
 
@@ -760,55 +880,13 @@ HTML_TEMPLATE = r"""
                 },
                 body: JSON.stringify({ party_name: partyName })
             })
-            .then(res => res.json())
+            .then(res => handleApiResponse(res))
             .then(data => {
-                alert(data.message);
-                closeModal('trashModal');
-                fetchPartyMastersList();
-            });
-        }
-
-        function submitSalesOrder() {
-            var state = document.getElementById('ordState').value;
-            var city = document.getElementById('ordCity').value;
-            var party = document.getElementById('ordParty').value;
-
-            if(!party) return alert('Please select a Party!');
-
-            var items = [];
-            var container = document.getElementById('orderItemsContainer');
-            var rows = container.querySelectorAll('.row');
-
-            rows.forEach(r => {
-                var itemSelect = r.querySelector('.row-item-select').value;
-                var rate = parseFloat(r.querySelector('.row-item-rate').value || 0);
-                var qty = parseFloat(r.querySelector('.row-item-qty').value || 0);
-                var total = rate * qty;
-
-                if(itemSelect && rate > 0 && qty > 0) {
-                    items.push({ item_name: itemSelect, rate: rate, qty: qty, total: total });
+                if(data) {
+                    alert(data.message);
+                    closeModal('trashModal');
+                    fetchPartyMastersList();
                 }
-            });
-
-            if(items.length === 0) return alert('Please add at least 1 valid Item with Rate & Qty!');
-
-            var grandTotal = parseFloat(document.getElementById('grandOrderTotal').innerText || 0);
-            var pObj = masterPartiesList.find(p => p.party_name === party);
-            var gstStatus = pObj ? pObj.gst_status : 'URD';
-
-            fetch('/api/create-order-multi', {
-                method: 'POST',
-                headers: { 
-                    'Content-Type': 'application/json',
-                    'x-access-token': authToken 
-                },
-                body: JSON.stringify({ state: state, city: city, party_name: party, gst_status: gstStatus, items: items, grand_total: grandTotal })
-            })
-            .then(res => res.json())
-            .then(data => {
-                alert(data.message);
-                fetchOrders();
-                fetchItemMastersList();
             });
         }
 
@@ -824,11 +902,13 @@ HTML_TEMPLATE = r"""
                 headers: { 'x-access-token': authToken },
                 body: formData
             })
-            .then(res => res.json())
+            .then(res => handleApiResponse(res))
             .then(data => {
-                alert(data.message);
-                fetchPartyMastersList();
-                fetchItemMastersList();
+                if(data) {
+                    alert(data.message);
+                    fetchPartyMastersList();
+                    fetchItemMastersList();
+                }
             });
         }
 
@@ -836,32 +916,49 @@ HTML_TEMPLATE = r"""
             fetch('/api/get-orders', {
                 headers: { 'x-access-token': authToken }
             })
-            .then(res => res.json())
+            .then(res => handleApiResponse(res))
             .then(orders => {
-                var tbody = document.getElementById('ordersAuditBody');
-                tbody.innerHTML = '';
-                if(!orders || orders.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;">No orders found.</td></tr>';
-                    return;
-                }
-                orders.forEach(o => {
-                    var itemsDetail = '';
-                    if(o.items && o.items.length > 0) {
-                        o.items.forEach(i => {
-                            itemsDetail += `• ${i.item_name} (₹${i.rate} x ${i.qty} = ₹${i.total})<br>`;
-                        });
+                if(orders) {
+                    var tbody = document.getElementById('ordersAuditBody');
+                    tbody.innerHTML = '';
+                    if(!orders || orders.length === 0) {
+                        tbody.innerHTML = '<tr><td colspan="2" style="text-align:center;">No orders found.</td></tr>';
+                        return;
                     }
+                    orders.forEach(o => {
+                        var itemsDetail = '';
+                        if(o.items && o.items.length > 0) {
+                            o.items.forEach(i => {
+                                itemsDetail += `• ${i.item_name} (₹${i.rate} x ${i.qty}) = ₹${i.total}<br>`;
+                            });
+                        }
 
-                    tbody.innerHTML += `<tr>
-                        <td><b>${o.order_no}</b></td>
-                        <td>${o.date}</td>
-                        <td>${o.party_name} <br><small>(${o.gst_status})</small></td>
-                        <td>${o.city_village}</td>
-                        <td><small>${itemsDetail}</small></td>
-                        <td><b>${o.salesman_id}</b></td>
-                        <td><b style="color:#166534;">₹${o.grand_total}</b></td>
-                    </tr>`;
-                });
+                        tbody.innerHTML += `<tr>
+                            <td><b>${o.order_no}</b><br><small>${o.date}</small><br><b>${o.party_name}</b> (${o.city_village})<br><small>By: ${o.salesman_id}</small></td>
+                            <td><small>${itemsDetail}</small><br><b style="color:#166534; font-size:15px;">Total: ₹${o.grand_total}</b></td>
+                        </tr>`;
+                    });
+                }
+            });
+        }
+
+        function openForgetModal() {
+            document.getElementById('forgetModal').style.display = 'flex';
+        }
+
+        function sendResetVerification() {
+            var q = document.getElementById('resetQuery').value.trim();
+            if(!q) return alert('Enter Details!');
+
+            fetch('/api/forget-password', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ query: q })
+            })
+            .then(res => res.json())
+            .then(data => {
+                alert(data.message);
+                closeModal('forgetModal');
             });
         }
 
@@ -878,6 +975,23 @@ HTML_TEMPLATE = r"""
 def home():
     return render_template_string(HTML_TEMPLATE)
 
+@app.route('/api/verify-token', methods=['GET'])
+@token_required
+def verify_token(current_user, current_role, company_code):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute('SELECT full_name FROM users WHERE LOWER(user_id) = LOWER(?)', (current_user,))
+    user = cursor.fetchone()
+    conn.close()
+    
+    return jsonify({
+        "status": "success",
+        "company_code": company_code,
+        "user_id": current_user,
+        "full_name": user[0] if user else current_user,
+        "role": current_role
+    })
+
 @app.route('/api/login', methods=['POST'])
 def login():
     data = request.json
@@ -888,18 +1002,23 @@ def login():
     cursor = conn.cursor()
     cursor.execute('SELECT company_code, user_id, full_name, role, status FROM users WHERE LOWER(user_id) = LOWER(?) AND password = ?', (u_id, pwd))
     user = cursor.fetchone()
-    conn.close()
 
     if user:
         if user[4] != 'Active':
+            conn.close()
             return jsonify({"status": "error", "message": f"🚫 Account Restricted! Status: '{user[4]}'."}), 403
 
         token = jwt.encode({
             'company_code': user[0],
             'user_id': user[1],
             'role': user[3],
-            'exp': datetime.now(timezone.utc) + timedelta(days=30)
+            'exp': datetime.now(timezone.utc) + timedelta(days=365)
         }, app.config['SECRET_KEY'], algorithm="HS256")
+
+        # Save active single session token in DB
+        cursor.execute("UPDATE users SET current_token = ? WHERE LOWER(user_id) = LOWER(?)", (token, u_id))
+        conn.commit()
+        conn.close()
 
         return jsonify({
             "status": "success",
@@ -910,6 +1029,7 @@ def login():
             "role": user[3]
         })
     else:
+        conn.close()
         return jsonify({"status": "error", "message": "Invalid User ID or Password!"}), 401
 
 @app.route('/api/forget-password', methods=['POST'])
@@ -1015,7 +1135,7 @@ def delete_party_soft(current_user, current_role, company_code):
     conn.commit()
     conn.close()
 
-    return jsonify({"status": "success", "message": f"🗑️ Party '{p_name}' Moved to Trash Bin! (30 Days Expiry)"})
+    return jsonify({"status": "success", "message": f"🗑️ Party '{p_name}' Moved to Trash Bin!"})
 
 @app.route('/api/restore-party', methods=['POST'])
 @token_required
@@ -1041,7 +1161,7 @@ def import_tally_xml(current_user, current_role, company_code):
     try:
         raw_bytes = file.read()
         parse_and_seed_xml_content(raw_bytes, company_code)
-        return jsonify({"status": "success", "message": "🎉 Tally XML Parsed & Auto-Saved to Database!"})
+        return jsonify({"status": "success", "message": "🎉 Tally XML Parsed & Auto-Saved!"})
     except Exception as e:
         return jsonify({"status": "error", "message": f"XML Parsing Error: {str(e)}"}), 500
 
